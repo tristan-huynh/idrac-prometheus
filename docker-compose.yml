@@ -1,0 +1,6 @@
+services:
+  idracprometheus:
+    image: idracprometheus
+    build:
+      context: .
+      dockerfile: ./Dockerfile
