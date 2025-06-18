@@ -1,8 +1,6 @@
-import requests, configparser, logging, urllib3
+import requests, configparser, urllib3, logging
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-logging.captureWarnings(True)
-logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
 
 config = configparser.ConfigParser()
 config.read('config.ini')
@@ -73,6 +71,42 @@ def fetch_temperature_metrics(probe):
         return thermal_temp
     else:
         return None
+
+def detect_fan_naming_convention():
+    fans_url = f"{url}Chassis/System.Embedded.1/ThermalSubsystem/Fans"
+    try:
+        response = session.get(fans_url)
+        response.raise_for_status()
+        data = response.json()
+        logging.debug("Fans endpoint data: %s", data)
+        fan_list = data.get('Members', [])
+        probes = []
+        for fan in fan_list:
+            fan_detail_url = fan.get('@odata.id')
+            if fan_detail_url:
+                full_url = requests.compat.urljoin(url, fan_detail_url)
+                fan_response = session.get(full_url)
+                fan_response.raise_for_status()
+                fan_data = fan_response.json()
+                logging.debug("Fan data: %s", fan_data)
+                # Use the 'Id' field to determine naming since it contains "Fan.Embedded."
+                fan_id = fan_data.get("Id", "")
+                if fan_id.startswith("Fan.Embedded."):
+                    probe = fan_id.split("Fan.Embedded.")[-1]
+                    probes.append(probe)
+        logging.info("Detected fan probes: %s", probes)
+        return probes
+    except Exception as e:
+        logging.error("Error detecting fan naming convention: %s", e)
+        return []
+
+def fetch_all_fan_data(data_type):
+    probes = detect_fan_naming_convention()
+    fan_data_results = {}
+    for probe in probes:
+        value = fetch_fan_metrics(probe, data_type)
+        fan_data_results[probe] = value
+    return fan_data_results
 
 # 1A, 1B, or 1, 2 depending on chassis 
 # RPM or PWM type

@@ -1,12 +1,16 @@
-import time, configparser
-from prometheus_client import start_http_server, Gauge
+import time, configparser, logging
+from prometheus_client import start_http_server, Gauge, Info
 from src import rest
+
+logging.captureWarnings(True)
 
 config = configparser.ConfigParser()
 config.read('config.ini')
 
 timeout = int(config['exporter']['timeout'].replace('"', ''))
 port = int(config['exporter']['port'].replace('"', ''))
+
+logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
 
 idrac_health = Gauge('idrac_health_status', 'iDRAC health status', ['status'])
 avg_power = Gauge('idrac_average_power_watts', 'Average power consumption in watts')
@@ -15,15 +19,14 @@ internal_temp = Gauge('idrac_internal_temp_celsius', 'Internal temperature in Ce
 intake_temp = Gauge('idrac_intake_temp_celsius', 'Intake temperature in Celsius')
 exhaust_temp = Gauge('idrac_exhaust_temp_celsius', 'Exhaust temperature in Celsius')
 
-system_model = Gauge('idrac_system_model', 'System model')
-system_serial = Gauge('idrac_system_serial', 'System serial number')
-system_power_state = Gauge('idrac_system_power_state', 'System power state')
-system_uuid = Gauge('idrac_system_uuid', 'System UUID')
-system_manufacturer = Gauge('idrac_system_manufacturer', 'System manufacturer')
-system_asset_tag = Gauge('idrac_system_asset_tag', 'System asset tag')
-system_sku = Gauge('idrac_system_sku', 'System SKU')
-system_part_number = Gauge('idrac_system_part_number', 'System part number')
-system_power_state = Gauge('idrac_system_power_state_info', 'System power state info')
+system_model = Info('idrac_system_model', 'System model')
+system_serial = Info('idrac_system_serial', 'System serial number')
+system_power_state = Info('idrac_system_power_state', 'System power state')
+system_uuid = Info('idrac_system_uuid', 'System UUID')
+system_manufacturer = Info('idrac_system_manufacturer', 'System manufacturer')
+system_asset_tag = Info('idrac_system_asset_tag', 'System asset tag')
+system_sku = Info('idrac_system_sku', 'System SKU')
+system_part_number = Info('idrac_system_part_number', 'System part number')
 
 sensor_ps1_current = Gauge('idrac_sensor_ps1_current', 'PS1 Current')
 sensor_ps2_current = Gauge('idrac_sensor_ps2_current', 'PS2 Current')
@@ -31,8 +34,7 @@ sensor_ps1_voltage = Gauge('idrac_sensor_ps1_voltage', 'PS1 Voltage')
 sensor_ps2_voltage = Gauge('idrac_sensor_ps2_voltage', 'PS2 Voltage')
 sensor_board_power = Gauge('idrac_sensor_board_power', 'System Board Power Consumption')
 sensor_cpu_vcore = Gauge('idrac_sensor_cpu_vcore', 'CPU VCORE Voltage')
-sensor_fan_1a = Gauge('idrac_sensor_fan_1a', 'Fan Embedded 1A Speed')
-sensor_fan_1b = Gauge('idrac_sensor_fan_1b', 'Fan Embedded 1B Speed')
+sensor_fan_speed = Gauge('idrac_sensor_fan_speed', 'Fan Speed', ['fan', 'reading_type'])
 sensor_cpu1_temp = Gauge('idrac_sensor_cpu1_temp', 'CPU1 Temperature')
 sensor_board_inlet_temp = Gauge('idrac_sensor_board_inlet_temp', 'System Board Inlet Temperature')
 sensor_board_exhaust_temp = Gauge('idrac_sensor_board_exhaust_temp', 'System Board Exhaust Temperature')
@@ -84,10 +86,18 @@ sensor_system_airflow = Gauge('idrac_sensor_system_airflow', 'System Air Flow')
     # fetch_sensor_metrics("SystemAirFlow")
 
 def update_metrics():
-    # Fetch and update iDRAC health status
-    state = rest.fetch_idrac_state()  # returns a health status string
+
+    state = rest.fetch_idrac_state() 
     # Convert state to a numeric value (for example: "OK" => 1, else 0)
-    health_value = 1 if state.lower() in ['ok', 'optimal'] else 0
+    lower_state = state.lower()
+    if lower_state == "ok":
+        health_value = 1
+    elif lower_state == "warning":
+        health_value = 0.5
+    elif lower_state == "critical":
+        health_value = 0
+    else:
+        health_value = 0  # fallback for unexpected states
     idrac_health.labels(status=state).set(health_value)
 
 
@@ -116,26 +126,23 @@ def update_metrics():
     asset_tag = rest.fetch_system_info("AssetTag")
     sku = rest.fetch_system_info("SKU")
     part_number = rest.fetch_system_info("PartNumber")
-    power_state_info = rest.fetch_system_info("PowerState")
 
     if model is not None:
-        system_model.set(model)
+        system_model.info({'model': model})
     if serial is not None:
-        system_serial.set(serial)
+        system_serial.info({'serial': serial})
     if power_state is not None:
-        system_power_state.set(power_state)
+        system_power_state.info({'power_state': power_state})
     if uuid is not None:
-        system_uuid.set(uuid)
+        system_uuid.info({'uuid': uuid})
     if manufacturer is not None:
-        system_manufacturer.set(manufacturer)
+        system_manufacturer.info({'manufacturer' :manufacturer})
     if asset_tag is not None:
-        system_asset_tag.set(asset_tag)
+        system_asset_tag.info({'asset_tag': asset_tag})
     if sku is not None:
-        system_sku.set(sku)
+        system_sku.info({'sku': sku})
     if part_number is not None:
-        system_part_number.set(part_number)
-    if power_state_info is not None:
-        system_power_state.set(power_state_info)
+        system_part_number.info({'part_number': part_number})
     
     ps1_current = rest.fetch_sensor_metrics("PS1Current1")
     ps2_current = rest.fetch_sensor_metrics("PS2Current2")
@@ -143,8 +150,8 @@ def update_metrics():
     ps2_voltage = rest.fetch_sensor_metrics("PS2Voltage")
     board_power = rest.fetch_sensor_metrics("SystemBoardPwrConsumption")
     cpu_vcore = rest.fetch_sensor_metrics("CPUVCOREVR")
-    fan_1a = rest.fetch_sensor_metrics("Fan.Embedded.1A")
-    fan_1b = rest.fetch_sensor_metrics("Fan.Embedded.1B")
+    fan_pwm_data = rest.fetch_all_fan_data("PWM")
+    fan_rpm_data = rest.fetch_all_fan_data("RPM")
     cpu1_temp = rest.fetch_sensor_metrics("CPU1Temp")
     board_inlet_temp = rest.fetch_sensor_metrics("SystemBoardInletTemp")
     board_exhaust_temp = rest.fetch_sensor_metrics("SystemBoardExhaustTemp")
@@ -167,10 +174,16 @@ def update_metrics():
         sensor_board_power.set(board_power)
     if cpu_vcore is not None:
         sensor_cpu_vcore.set(cpu_vcore)
-    if fan_1a is not None:
-        sensor_fan_1a.set(fan_1a)
-    if fan_1b is not None:
-        sensor_fan_1b.set(fan_1b)
+    for fan, value in fan_pwm_data.items():
+        if value is not None:
+            # logging.info(f"Setting fan gauge for fan {fan} (PWM) to {value}")
+            sensor_fan_speed.labels(fan=fan, reading_type="PWM").set(value)
+
+
+    for fan, value in fan_rpm_data.items():
+        if value is not None:
+            # logging.info(f"Setting fan gauge for fan {fan} (RPM) to {value}")
+            sensor_fan_speed.labels(fan=fan, reading_type="RPM").set(value)
     if cpu1_temp is not None:
         sensor_cpu1_temp.set(cpu1_temp)
     if board_inlet_temp is not None:
